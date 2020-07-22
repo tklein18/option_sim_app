@@ -1,0 +1,521 @@
+---
+title: "Options Simulations"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+```
+
+
+
+
+In this notebook I will explore how to create simulations for a stock's price to use to value an option on that stock. The simulations should be run on different assumptions about the stock's variance and mean change (i.e. its distribution of price changes). This will help determine how much of a departure from its recent trading needs to happen for the option to be valuable. 
+
+
+
+First lets load libraries and set the working directory.
+
+```{r intro}
+
+setwd('/Users/tklein/Desktop/option_simulations')
+
+
+library(tidyquant)
+library(tidyverse)
+library(lubridate)
+library(scales)
+
+```
+
+
+
+
+The first thing we should do is look at how volatile the over-all stock market is. This is because when making different different assumptions for volatility, they should ideally be based on data from the stock market. 
+
+
+```{r snp volatility}
+
+# getting s&p 500 prices
+snp <- tidyquant::tq_get('^GSPC')
+
+
+
+# calculating price changes by day
+
+snp <- snp %>% 
+  mutate(
+    per_change = (close - lag(close)) / lag(close)
+  )
+
+
+# calculating rolling standard deviation in returns over 6 months
+
+roll_std <- c()
+
+for(i in 1:nrow(snp)){
+  
+  if(i < 181){
+    roll_std <- append(roll_std, NA)
+  } else{
+    roll_std <- append(
+      roll_std,
+      sd(snp[(i - 179):i, "per_change"] %>% unlist() %>% unname())
+      )
+  }
+  
+  
+}
+
+snp$roll_std <- roll_std
+
+
+
+# graphing rolling mean of standard deviation over time
+
+
+std_mean <- snp %>% 
+  filter(!is.na(roll_std)) %>% 
+  summarize(mean = mean(roll_std)) %>% 
+  pull(mean)
+
+snp %>% 
+  filter(!is.na(roll_std)) %>% 
+  ggplot(aes(x = date, y = roll_std))+
+  geom_line()+
+  geom_hline(yintercept = std_mean)+
+  scale_y_continuous(labels = percent)+
+  theme_bw()
+
+
+
+
+
+
+```
+
+Wow, volatility really shot up in 2020. Anyways, it seems that for the market as a whole volatility ranges between .5% and 2.5%. However, it seems it has mostly been between .5% and 1.5%, only 2020 is the outlier. With a mean of 1%, this range would mean that the max volatility is 50% greater than the average volatility, and the minimum volatility is 50% less than the average. We can use that rule of thumb to when creating our simulations. 
+
+Lets look at the average change as well. It will be interesting to see the range of the average change in terms of the standard deviation. 
+
+
+
+```{r snp mean }
+
+
+roll_mean <- c()
+
+for(i in 1:nrow(snp)){
+  
+  if(i < 181){
+    roll_mean <- append(roll_mean, NA)
+  } else{
+    roll_mean <- append(
+      roll_mean,
+      mean(snp[(i - 179):i, "per_change"] %>% unlist() %>% unname())
+      )
+  }
+  
+  
+}
+
+snp$roll_mean <- roll_mean
+
+
+
+mean_mean <- snp %>% 
+  filter(!is.na(roll_mean)) %>% 
+  summarize(mean = mean(roll_mean)) %>% 
+  pull(mean)
+
+snp %>% 
+  filter(!is.na(roll_mean)) %>% 
+  ggplot(aes(x = date, y = roll_mean))+
+  geom_line()+
+  geom_hline(yintercept = mean_mean)+
+  scale_y_continuous(labels = percent)+
+  theme_bw()
+
+
+
+
+
+
+```
+
+
+So it looks like the average change is between -.15% to .15%, which would be about 15% of the standard deviations range. So, for our different scenarios we could have the mean shift be 15% of the standard deviation. 
+
+The more I think about it, the less I like this idea. There isn't any way to tell if the recent performance of the stock is at a high, a low, or just average, and so there isn't any pre-defined simulations that make sense. For example, given an average change of .1%, and a standard deviation of 2% doesn't immediately indicate whether the average is at an all time high, and thus we should look at lower scenarios, or if its about where its always been so we should look at both scenarios when it increases and those where it decreases. 
+
+
+
+
+
+
+
+
+Lets now try to create a simulation for a stock. Lets do Tesla, because at the time of this writing its almost certainly a bubble, so should be a prime candidate for a put option. 
+
+```{r tesla data}
+
+
+
+tsla <- tq_get('TSLA')
+
+
+tsla %>% 
+  ggplot(aes(date, close))+
+  geom_line()
+
+
+```
+
+
+
+It really is incredible how far it has climbed. For this purpose, lets assume we are getting an option for 6 months from today. Since we are looking 6 months out, we can look at the most previous 6 months of price changes to determine the average change and volatility. I have no idea if this rule of thumb makes sense, but I do know that we can't just use the average change and volatility since inception. Thats because the option is priced on recent activity, so we should probably model it on recent activity. Right? I don't know if there is some better time frame that is more closely correllated with future activity, so I'll just go with the rule of thumb I described. 
+
+
+```{r tsla recent performance}
+
+tsla <- tsla %>% 
+  mutate(
+    per_change = (close - lag(close)) / lag(close)
+  )
+
+
+
+tsla_mean <- tsla %>% 
+  filter(
+    date + 180 >= Sys.Date()
+  ) %>% 
+  pull(per_change) %>% 
+  mean()
+
+
+tsla_std <- tsla %>% 
+  filter(
+    date + 180 >= Sys.Date()
+  ) %>% 
+  pull(per_change) %>% 
+  sd()
+
+
+
+current_price <- tsla %>% 
+  filter(date == max(tsla$date)) %>% 
+  pull(close)
+
+
+```
+
+
+
+
+Now lets create a simulation for Tesla's stock price. 
+
+
+
+
+
+
+```{r tsla sim}
+
+
+
+
+stock_sim <- function(start_price, days, avg_change, std_change){
+  
+  changes <- rnorm(n = days, mean = (1+avg_change), sd = std_change)
+  
+  sim_path <- cumprod(c(start_price, changes))
+  
+  
+  return(sim_path)
+  
+}
+
+
+
+x <- stock_sim(
+  start_price = current_price, days = 180,
+  avg_change = tsla_mean, std_change = tsla_std
+  )
+
+
+plot(unlist(x))
+
+
+```
+
+
+
+
+And now we can multiple of simulations!
+
+```{r tsla monte carlo}
+
+
+test <- replicate(
+  100, 
+  stock_sim(
+  start_price = current_price, days = 180,
+  avg_change = tsla_mean, std_change = tsla_std
+  )
+)
+
+
+results_frame <- tibble()
+for(i in 1:ncol(test)){
+  
+  temp_frame <- tibble(
+    sim_number = i, sim_results = test[, i],
+    days = c(1:nrow(test))
+    )
+  
+  
+  results_frame <- bind_rows(results_frame, temp_frame)
+  
+}
+
+
+results_frame <- results_frame %>% 
+  group_by(sim_number) %>% 
+  nest()
+
+
+
+
+final_price <- function(x){
+  x %>% 
+    filter(days == max(days)) %>% 
+    pull(sim_results)
+}
+
+
+
+results_frame %>% 
+  mutate(
+    close_price = map_dbl(data, final_price), 
+    min_price = map_dbl(data, function(x) mean(x$sim_results))
+  ) %>% 
+  ungroup() %>% 
+  summarize(
+    avg_close = dollar(mean(close_price)),
+    avg_min = dollar(mean(min_price))
+  )
+  
+
+
+
+
+```
+
+
+
+
+
+We can also visualize the minimum and close prices. 
+
+
+```{r graph of close prices}
+
+
+results_frame %>% 
+  unnest(cols = c(data)) %>% 
+  filter(days == max(days)) %>% 
+  ungroup() %>% 
+  ggplot(aes(y = sim_results))+
+  geom_boxplot()+
+  scale_y_continuous(labels = dollar)+
+  theme_bw()+
+  ggtitle('Boxplot of Simulated Closing Prices')
+
+
+```
+
+
+
+
+```{r graph of min prices}
+
+
+
+results_frame %>% 
+  unnest(cols = c(data)) %>% 
+  filter(sim_results == min(sim_results)) %>% 
+  ungroup() %>% 
+  ggplot(aes(y = sim_results))+
+  geom_boxplot()+
+  scale_y_continuous(labels = dollar)+
+  theme_bw()+
+  ggtitle('Boxplot of Simulated Min Prices')
+
+
+
+```
+
+
+
+
+From this data it would be really easy to compare the strike price of the option to where the stock price ends up in the simulations. For example, if the strike price was \$1,000, we could see that less than a quarter of simulations had a price that was \$1,000 or below. 
+
+
+We should now try running multiple simulations by tweaking the mean and standard deviation. In this example, we know that Tesla has been on an absolute tear recently, so of course simulations based on that recent data would show the stock price to further rocket. So we need to model scenarios where the average change is lower. 
+
+
+
+
+```{r multiple scenarios}
+
+
+
+mean_range <- seq(-tsla_mean,tsla_mean, .005)
+
+std_range <- seq(.5 * tsla_std, 1.5 * tsla_std, .01)
+
+
+
+simulations <- expand.grid('means' = mean_range, 'stds' = std_range)
+
+
+
+simulations <- simulations %>% 
+  mutate(
+    scens = map2(
+      means, stds, ~ replicate(
+        1000, stock_sim(
+          start_price = current_price, days = 180, 
+          avg_change = .x, std_change = .y
+      )
+    )
+  )
+)
+
+
+
+
+
+# hypothetical strike price of put option
+
+x_price <- 1000
+
+
+
+
+# heatmap of closing price performance in different scenarios
+
+simulations %>% 
+  mutate(
+    close_price = map_dbl(scens, function(x) sum(apply(x, 2, function(y) y[length(y)]) < x_price) / ncol(x))
+  ) %>% 
+  select(
+    means, stds, close_price
+  ) %>% 
+  ggplot(aes(stds, means))+
+  geom_tile(aes(fill = close_price))+
+  geom_text(aes(label = percent(close_price)))+
+  scale_y_continuous(labels = percent, name = 'Mean Price Change', breaks = mean_range)+
+  scale_x_continuous(labels = percent, name = 'Standard Deviation', breaks = std_range)+
+  scale_fill_gradient(low = 'white', high = 'red', name = '', labels = percent)+
+  theme_bw()+
+  ggtitle('Percent of Simulations Where Close Price is Below Stike Price')
+
+
+
+
+
+
+# heatmap of average value at closing price the different scenarios
+
+simulations %>% 
+  mutate(
+    min_return = map_dbl(scens, function(x) mean(apply(x, 2, function(y) max(x_price - y[length(y)], 0))))
+  ) %>% 
+  select(
+    means, stds, min_return
+  ) %>% 
+  ggplot(aes(stds, means))+
+  geom_tile(aes(fill = min_return))+
+  geom_text(aes(label = dollar(min_return)))+
+  scale_y_continuous(labels = percent, name = 'Mean Price Change', breaks = mean_range)+
+  scale_x_continuous(labels = percent, name = 'Standard Deviation', breaks = std_range)+
+  scale_fill_gradient(low = 'white', high = 'red', name = '', labels = dollar)+
+  theme_bw()+
+  ggtitle('Average Value at Closing Price of Simulation')
+
+
+
+
+
+
+
+# heatmap of minimum price performance in different scenarios
+
+simulations %>% 
+  mutate(
+    min_price = map_dbl(scens, function(x) sum(apply(x, 2, min) < x_price) / ncol(x))
+  ) %>% 
+  select(
+    means, stds, min_price
+  ) %>% 
+  ggplot(aes(stds, means))+
+  geom_tile(aes(fill = min_price))+
+  geom_text(aes(label = percent(min_price)))+
+  scale_y_continuous(labels = percent, name = 'Mean Price Change', breaks = mean_range)+
+  scale_x_continuous(labels = percent, name = 'Standard Deviation', breaks = std_range)+
+  scale_fill_gradient(low = 'white', high = 'red', name = '', labels = percent)+
+  theme_bw()+
+  ggtitle('Percent of Simulations Where Minimum Price is Below Stike Price')
+
+
+
+
+# heatmap of average value at min price the different scenarios
+
+simulations %>% 
+  mutate(
+    min_return = map_dbl(scens, function(x) mean(apply(x, 2, function(y) max(x_price - min(y), 0))))
+  ) %>% 
+  select(
+    means, stds, min_return
+  ) %>% 
+  ggplot(aes(stds, means))+
+  geom_tile(aes(fill = min_return))+
+  geom_text(aes(label = dollar(min_return)))+
+  scale_y_continuous(labels = percent, name = 'Mean Price Change', breaks = mean_range)+
+  scale_x_continuous(labels = percent, name = 'Standard Deviation', breaks = std_range)+
+  scale_fill_gradient(low = 'white', high = 'red', name = '', labels = dollar)+
+  theme_bw()+
+  ggtitle('Average Value at Minimum Price of Simulation')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
