@@ -21,7 +21,7 @@ First lets load libraries and set the working directory.
 
 ```{r intro}
 
-setwd('/Users/tklein/Desktop/option_simulations')
+setwd('/Users/tklein/Desktop/option_sim_app')
 
 
 library(tidyquant)
