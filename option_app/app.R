@@ -80,14 +80,15 @@ ui <- fluidPage(
         
         fluidRow(
           
-          plotOutput('price_graph')
+          plotlyOutput('price_graph')
           
         ), 
         
+        br(),
         
         fluidRow(
           
-          plotOutput('price_change_hist')
+          plotlyOutput('price_change_hist')
           
         ), 
         
@@ -158,13 +159,33 @@ server <- function(input, output) {
   
   
   
-  output$price_graph <- renderPlot({
+  output$price_graph <- renderPlotly({
     
-    history_data() %>% 
-      ggplot(aes(date, close))+
+    price_ggplot <- history_data() %>% 
+      ggplot(aes(
+        date, close, group = symbol,
+        text = paste(
+          'Date:', date,
+          '<br> Price:', dollar(close)
+        )
+        ))+
       geom_line()+
       scale_y_continuous(name = 'Close Price', labels = dollar)+
-      theme_bw()
+      theme_bw()+
+      theme(
+        text = element_text(size = 10)
+      )+
+      ggtitle(paste(
+        input$history.ticker, 'Stock Price History', sep = ' '
+      ))
+    
+    
+    
+    
+    
+    ggplotly(price_ggplot, tooltip = 'text')
+    
+    
     
   })
   
@@ -172,13 +193,27 @@ server <- function(input, output) {
   
   
   
-  output$price_change_hist <- renderPlot({
+  output$price_change_hist <- renderPlotly({
     
-    history_data() %>% 
-      ggplot(aes(per_change))+
+    
+    
+    density_ggplot <- history_data() %>% 
+      ggplot(aes(
+        per_change, group = symbol,
+        text = paste('Percent Change:', percent(per_change))
+        ))+
       geom_density()+
       scale_x_continuous(name = 'Percent Change', labels = percent)+
-      theme_bw()
+      theme_bw()+
+      theme(
+        text = element_text(size = 10)
+      )+
+      ggtitle('Historical Frequency of Percent Price Changes')
+    
+    
+    ggplotly(density_ggplot)
+    
+    
     
   })
   
@@ -228,7 +263,11 @@ server <- function(input, output) {
       theme_bw()+
       theme(
         text = element_text(size = 10)
-      )
+      )+
+      ggtitle(paste(
+        'Rolling', input$smoothing.days, 
+        'Day Average of Percent Change in Price', sep = ' '
+      ))
     
     
     
@@ -298,7 +337,11 @@ server <- function(input, output) {
       theme_bw()+
       theme(
         text = element_text(size = 10)
-      )
+      )+
+      ggtitle(paste(
+        'Rolling', input$smoothing.days, 
+        'Day Standard Deviation of Percent Change in Price', sep = ' '
+      ))
     
     
     
